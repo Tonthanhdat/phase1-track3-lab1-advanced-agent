@@ -106,3 +106,27 @@ Dựa trên kết quả từ quá trình chạy benchmark (`hotpot_dev_run`), d�
 - **Hoàn thành không lỗi (none)**: 259
 - **Trả lời sai kết quả cuối cùng (wrong_final_answer)**: 41
 - *(Không có trường hợp nào bị lạc đề (entity drift), lặp vô hạn (looping), trích xuất thiếu bước (incomplete multi hop) hay học vẹt qua phản tư (reflection overfit)).*
+
+## (f) Báo cáo Kết quả Benchmark (Golden Test Set)
+
+Dựa trên kết quả từ quá trình chạy benchmark với tập dữ liệu **Golden Test Set** (`hotpot_golden.json`), dưới đây là bảng thống kê chi tiết hiệu suất giữa hai tác tử **ReAct** và **Reflexion**.
+
+### Tổng quan (Summary)
+- **Tập dữ liệu**: `hotpot_golden.json`
+- **Tổng số câu hỏi đánh giá**: 20 (tổng cộng 40 records cho cả 2 agent)
+- **Chế độ chạy**: `mock`
+- **Điểm Autograde**: **90/100** (Thiếu 10 điểm phần Experiment do tập golden chỉ có 20 câu hỏi < 100 câu)
+
+### Kết quả chi tiết
+
+| Chỉ số | ReAct | Reflexion | Chênh lệch (Reflexion - ReAct) |
+| --- | --- | --- | --- |
+| **Độ chính xác tuyệt đối (EM Score)** | 100% | 100% | 0% |
+| **Số lần thử trung bình (Avg Attempts)** | 1.0 | 1.05 | +0.05 |
+| **Số lượng Token ước tính trung bình** | 266.8 | 332.85 | +66.05 tokens |
+| **Độ trễ trung bình (Latency)** | 1,572.15 ms | 1,856.05 ms | +283.9 ms |
+
+### Phân tích & Nhận xét
+- **Độ chính xác (Exact Match - EM)**: Cả hai mô hình đều đạt điểm tuyệt đối 100% trên bộ Golden Dataset.
+- **Chi phí & Độ trễ**: Mặc dù độ chính xác đã đạt mức tối đa, tác tử **Reflexion** vẫn tốn thêm thời gian và token do cơ chế phân tích (trung bình số attempt là 1.05), dẫn đến tổng token ước tính và độ trễ nhỉnh hơn so với ReAct.
+- **Thống kê lỗi**: Hoàn thành không có bất kỳ lỗi nào (None: 40/40 records).
