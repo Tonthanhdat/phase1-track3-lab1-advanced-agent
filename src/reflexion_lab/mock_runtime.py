@@ -2,25 +2,83 @@ from __future__ import annotations
 from .schemas import QAExample, JudgeResult, ReflectionEntry
 from .utils import normalize_answer
 
-FIRST_ATTEMPT_WRONG = {"hp2": "London", "hp4": "Atlantic Ocean", "hp6": "Red Sea", "hp8": "Andes"}
+import json
+import time
+import os
+from dotenv import load_dotenv
+from .prompts import ACTOR_SYSTEM, EVALUATOR_SYSTEM, REFLECTOR_SYSTEM
+
+load_dotenv()
+
 FAILURE_MODE_BY_QID = {"hp2": "incomplete_multi_hop", "hp4": "wrong_final_answer", "hp6": "entity_drift", "hp8": "entity_drift"}
 
+class LLMTracker:
+    total_tokens = 0
+    total_latency = 0
+    
+    @classmethod
+    def reset(cls):
+        cls.total_tokens = 0
+        cls.total_latency = 0
+
+def call_llm(system_prompt: str, user_prompt: str, response_schema=None) -> str:
+    start_time = time.time()
+    try:
+        from openai import OpenAI
+        client = OpenAI()
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        kwargs = {
+            "model": "gpt-4o-mini",
+            "messages": messages,
+        }
+        
+        if response_schema:
+            kwargs["response_format"] = {"type": "json_object"}
+            
+        response = client.chat.completions.create(**kwargs)
+        
+        latency = int((time.time() - start_time) * 1000)
+        tokens = response.usage.total_tokens if response.usage else 0
+        LLMTracker.total_latency += latency
+        LLMTracker.total_tokens += tokens
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"LLM Error: {e}")
+        LLMTracker.total_latency += int((time.time() - start_time) * 1000)
+        return ""
+
 def actor_answer(example: QAExample, attempt_id: int, agent_type: str, reflection_memory: list[str]) -> str:
-    if example.qid not in FIRST_ATTEMPT_WRONG:
-        return example.gold_answer
-    if agent_type == "react":
-        return FIRST_ATTEMPT_WRONG[example.qid]
-    if attempt_id == 1 and not reflection_memory:
-        return FIRST_ATTEMPT_WRONG[example.qid]
-    return example.gold_answer
+    context_str = "\n".join([f"[{c.title}] {c.text}" for c in example.context])
+    user_prompt = f"Question: {example.question}\n\nContext:\n{context_str}"
+    if reflection_memory:
+        user_prompt += "\n\nPast failed attempts and lessons:\n" + "\n".join(reflection_memory)
+    return call_llm(ACTOR_SYSTEM, user_prompt).strip()
 
 def evaluator(example: QAExample, answer: str) -> JudgeResult:
     if normalize_answer(example.gold_answer) == normalize_answer(answer):
-        return JudgeResult(score=1, reason="Final answer matches the gold answer after normalization.")
-    if normalize_answer(answer) == "london":
-        return JudgeResult(score=0, reason="The answer stopped at the birthplace city and never completed the second hop to the river.", missing_evidence=["Need to identify the river that flows through London."], spurious_claims=[])
-    return JudgeResult(score=0, reason="The final answer selected the wrong second-hop entity.", missing_evidence=["Need to ground the answer in the second paragraph."], spurious_claims=[answer])
+        return JudgeResult(score=1, reason="Final answer matches the gold answer after normalization.", failure_mode="none")
+    
+    user_prompt = f"Question: {example.question}\nGold Answer: {example.gold_answer}\nPredicted Answer: {answer}"
+    res = call_llm(EVALUATOR_SYSTEM, user_prompt, response_schema=JudgeResult)
+    try:
+        data = json.loads(res)
+        return JudgeResult(**data)
+    except Exception:
+        return JudgeResult(score=0, reason="Failed to evaluate", failure_mode="wrong_final_answer")
 
 def reflector(example: QAExample, attempt_id: int, judge: JudgeResult) -> ReflectionEntry:
-    strategy = "Do the second hop explicitly: birthplace city -> river through that city." if example.qid == "hp2" else "Verify the final entity against the second paragraph before answering."
-    return ReflectionEntry(attempt_id=attempt_id, failure_reason=judge.reason, lesson="A partial first-hop answer is not enough; the final answer must complete all hops.", next_strategy=strategy)
+    context_str = "\n".join([f"[{c.title}] {c.text}" for c in example.context])
+    user_prompt = f"Question: {example.question}\nContext:\n{context_str}\nFailed Reason: {judge.reason}"
+    res = call_llm(REFLECTOR_SYSTEM, user_prompt, response_schema=ReflectionEntry)
+    try:
+        data = json.loads(res)
+        data["attempt_id"] = attempt_id
+        return ReflectionEntry(**data)
+    except Exception:
+        return ReflectionEntry(attempt_id=attempt_id, failure_reason=judge.reason, lesson="Error", next_strategy="Try again.")
+
